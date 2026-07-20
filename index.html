@@ -103,9 +103,8 @@
   .ledger-head-nav h2{justify-self:start;}
   .ledger-head-nav .stamp{justify-self:end;}
   .ledger-date-bar{display:flex; align-items:center; gap:8px; justify-content:center;}
-  .ledger-date-bar button{border:1px solid var(--ink); background:var(--card); border-radius:50%; width:28px; height:28px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:15px; color:var(--ink);}
-  .ledger-date-bar button:hover{background:var(--amber-soft); border-color:var(--amber);}
   .ledger-date-bar input[type=date]{border:1px solid var(--line); border-radius:5px; padding:5px 8px; font-size:13px; font-family:var(--font-mono); background:#FCFCFA; color:var(--ink);}
+  .ledger-date-sep{color:var(--ink-faint); font-size:13px;}
   @media (max-width:640px){
     .ledger-head-nav{grid-template-columns:1fr; row-gap:8px;}
     .ledger-head-nav h2, .ledger-head-nav .stamp{justify-self:center;}
@@ -433,9 +432,9 @@
         <div class="ledger-head ledger-head-nav">
           <h2>등록 항목 <span id="entryCount" class="count-pill">0건</span></h2>
           <div class="ledger-date-bar">
-            <button id="ledgerPrevDay" aria-label="이전 날짜">‹</button>
-            <input type="date" id="ledgerDateInput">
-            <button id="ledgerNextDay" aria-label="다음 날짜">›</button>
+            <input type="date" id="ledgerDateFromInput">
+            <span class="ledger-date-sep">~</span>
+            <input type="date" id="ledgerDateToInput">
           </div>
           <div class="stamp" id="totalStamp">합계 0원</div>
         </div>
@@ -591,8 +590,8 @@
     if(data && data.error === 'unauthorized') throw new Error('unauthorized');
     return data;
   }
-  async function apiSync(dateStr){
-    const res = await fetch(`${API_URL}?action=sync&date=${encodeURIComponent(dateStr)}&token=${encodeURIComponent(session.token)}`);
+  async function apiSync(dateFrom, dateTo){
+    const res = await fetch(`${API_URL}?action=sync&dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}&token=${encodeURIComponent(session.token)}`);
     const data = await res.json();
     if(data && data.error === 'unauthorized') throw new Error('unauthorized');
     return data;
@@ -606,7 +605,6 @@
 
   /* ---------------- state ---------------- */
   let entries = [];       // 오늘(시스템 기준) 입력한 전체 항목 (draft + done)
-  let ledgerDate = new Date(); // 현재 보고 있는 장부(구매일자) 날짜
   let confirmResolve = null;   // 삭제 확인 모달의 Promise resolve 함수
 
   function showConfirmModal(message){
@@ -645,7 +643,7 @@
     unitSelect: $('unitSelect'), qtyInput: $('qtyInput'), priceInput: $('priceInput'),
     amountPreview: $('amountPreview'), noteInput: $('noteInput'),
     entryCount: $('entryCount'), totalStamp: $('totalStamp'),
-    ledgerDateInput: $('ledgerDateInput'), ledgerPrevDay: $('ledgerPrevDay'), ledgerNextDay: $('ledgerNextDay'),
+    ledgerDateFromInput: $('ledgerDateFromInput'), ledgerDateToInput: $('ledgerDateToInput'),
     ledgerBody: $('ledgerBody'), ledgerTable: $('ledgerTable'), emptyState: $('emptyState'),
     doneBody: $('doneBody'), doneTable: $('doneTable'), doneEmptyState: $('doneEmptyState'),
     doneCount: $('doneCount'), doneStamp: $('doneStamp'),
@@ -765,9 +763,10 @@
   /* ---------------- data loading ---------------- */
   async function loadSync(){
     // 장부 조회 + 자동완성 + 마스터 목록을 한 번의 요청으로 처리 (왕복 횟수 절감)
-    const dateStr = dateKey(ledgerDate);
+    const dateFrom = el.ledgerDateFromInput.value || dateKey(new Date());
+    const dateTo = el.ledgerDateToInput.value || dateKey(new Date());
     try{
-      const data = await apiSync(dateStr);
+      const data = await apiSync(dateFrom, dateTo);
       entries = (data.ledger || []).map(r => ({
         id: r.id, date: r.date, time: r.time,
         material: r.material, vendor: r.vendor, outlet: r.outlet, spec: r.spec,
@@ -793,17 +792,8 @@
     }
   }
 
-  function shiftLedgerDate(deltaDays){
-    const next = new Date(ledgerDate);
-    next.setDate(next.getDate() + deltaDays);
-    goToLedgerDate(next);
-  }
-
-  function goToLedgerDate(date){
-    ledgerDate = date;
-    el.ledgerDateInput.value = dateKey(ledgerDate);
+  function onLedgerRangeChange(){
     if(editingId) cancelEdit();
-    if(!editingId) el.purchaseDateInput.value = dateKey(ledgerDate); // 지금 보고 있는 장부 날짜로 새 항목 기본값도 맞춰줌
     loadSync();
   }
 
@@ -939,7 +929,7 @@
   function cancelEdit(){
     editingId = null;
     el.entryForm.reset();
-    el.purchaseDateInput.value = dateKey(ledgerDate);
+    el.purchaseDateInput.value = dateKey(new Date());
     el.submitBtn.textContent = '장부에 기록';
     el.editBanner.classList.add('hidden');
     el.cancelEditBtn.classList.add('hidden');
@@ -967,7 +957,7 @@
         if(!res.success){ setSyncStatus('수정 실패', 'error'); return; }
         const idx = entries.findIndex(e => e.id === editingId);
         if(idx !== -1){
-          if(purchaseDate === dateKey(ledgerDate)){
+          if(purchaseDate >= el.ledgerDateFromInput.value && purchaseDate <= el.ledgerDateToInput.value){
             entries[idx] = Object.assign({}, entries[idx], { date: purchaseDate, material, vendor, outlet, spec, qty, unitPrice: price, amount: res.amount, note });
           } else {
             entries.splice(idx, 1); // 구매일자가 바뀌어 다른 날짜 장부로 이동한 경우 현재 화면에서는 제외
@@ -981,7 +971,7 @@
         const payload = { date: purchaseDate, material, vendor, outlet, spec, qty, unitPrice: price, note };
         const res = await apiAdd(payload);
         if(!res.success){ setSyncStatus(res.error || '저장 실패', 'error'); return; }
-        if(purchaseDate === dateKey(ledgerDate)){
+        if(purchaseDate >= el.ledgerDateFromInput.value && purchaseDate <= el.ledgerDateToInput.value){
           entries.push(Object.assign({}, payload, { id: res.id, time: res.time, author: res.author, amount: res.amount, status: 'draft', ts: Date.now() }));
           renderTable();
         }
@@ -1266,12 +1256,8 @@
     el.priceInput.addEventListener('input', updateAmountPreview);
     el.refreshBtn.addEventListener('click', () => { loadSync(); });
 
-    el.ledgerDateInput.addEventListener('change', () => {
-      if(!el.ledgerDateInput.value) return;
-      goToLedgerDate(parseDateKey(el.ledgerDateInput.value));
-    });
-    el.ledgerPrevDay.addEventListener('click', () => shiftLedgerDate(-1));
-    el.ledgerNextDay.addEventListener('click', () => shiftLedgerDate(1));
+    el.ledgerDateFromInput.addEventListener('change', onLedgerRangeChange);
+    el.ledgerDateToInput.addEventListener('change', onLedgerRangeChange);
 
     el.materialInput.addEventListener('input', () => renderMaterialSuggestions(el.materialInput.value));
     el.materialInput.addEventListener('focus', () => { if(el.materialInput.value.trim()) renderMaterialSuggestions(el.materialInput.value); });
@@ -1340,9 +1326,9 @@
   /* ---------------- init ---------------- */
   async function initDashboard(){
     if(!el._dashboardEventsAttached) attachDashboardEvents();
-    ledgerDate = new Date();
     const todayStr = dateKey(new Date());
-    el.ledgerDateInput.value = todayStr;
+    el.ledgerDateFromInput.value = todayStr;
+    el.ledgerDateToInput.value = todayStr;
     el.purchaseDateInput.value = todayStr;
     el.searchDateFrom.value = todayStr;
     el.searchDateTo.value = todayStr;
